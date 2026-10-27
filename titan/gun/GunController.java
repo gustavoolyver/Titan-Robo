@@ -44,6 +44,7 @@ public class GunController {
 
         double power = selectPower(target, distance);
         double bulletSpeed = 20 - 3 * power;
+        targeting.onAim(target, myX, myY, bulletSpeed, robot.getTime());
 
         double aimAngle = targeting.aimAngle(target, myX, myY, bulletSpeed, field);
         double gunTurn = Utils.normalRelativeAngle(aimAngle - robot.getGunHeadingRadians());
