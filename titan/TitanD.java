@@ -13,7 +13,7 @@ import robocode.ScannedRobotEvent;
 import robocode.WinEvent;
 import titan.gun.GuessFactorTargeting;
 import titan.gun.GunController;
-import titan.move.OrbitMovement;
+import titan.move.SurfMovement;
 import titan.radar.RadarLock;
 import titan.stats.ShotStats;
 import titan.utils.BattleField;
@@ -31,7 +31,7 @@ public class TitanD extends AdvancedRobot {
     private Enemy target;
 
     private RadarLock radar;
-    private OrbitMovement move;
+    private SurfMovement move;
     private GunController gun;
     private ShotStats stats;
 
@@ -59,7 +59,7 @@ public class TitanD extends AdvancedRobot {
         stats.load();
 
         radar = new RadarLock(this);
-        move = new OrbitMovement(this, new BattleField(width, height, MOVE_MARGIN));
+        move = new SurfMovement(this, new BattleField(width, height, MOVE_MARGIN));
         gun = new GunController(this,
                 new BattleField(width, height, TARGET_MARGIN),
                 new GuessFactorTargeting(), stats);
@@ -103,7 +103,7 @@ public class TitanD extends AdvancedRobot {
 
     @Override
     public void onHitByBullet(HitByBulletEvent e) {
-        move.onHitByBullet();
+        move.onHitByBullet(e);
     }
 
     @Override
