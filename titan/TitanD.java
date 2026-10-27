@@ -11,7 +11,7 @@ import robocode.HitWallEvent;
 import robocode.RobotDeathEvent;
 import robocode.ScannedRobotEvent;
 import robocode.WinEvent;
-import titan.gun.CircularTargeting;
+import titan.gun.GuessFactorTargeting;
 import titan.gun.GunController;
 import titan.move.OrbitMovement;
 import titan.radar.RadarLock;
@@ -62,7 +62,7 @@ public class TitanD extends AdvancedRobot {
         move = new OrbitMovement(this, new BattleField(width, height, MOVE_MARGIN));
         gun = new GunController(this,
                 new BattleField(width, height, TARGET_MARGIN),
-                new CircularTargeting(), stats);
+                new GuessFactorTargeting(), stats);
 
         radar.initRound();
         gun.initRound();
