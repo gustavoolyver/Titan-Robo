@@ -1,95 +1,101 @@
 package titan.gun;
 
-import java.awt.geom.Point2D;
 import robocode.AdvancedRobot;
-import robocode.util.Utils;
-import titan.stats.ShotStats;
-import titan.utils.BattleField;
-import titan.utils.Enemy;
+import robocode.ScannedRobotEvent;
+import robocode.Bullet;
+import java.awt.geom.Point2D;
 
-/** Arma: escolhe a potência, mira com a estratégia configurada e atira. */
 public class GunController {
-    private static final double MIN_POWER = 0.1;
-    private static final double ROBOT_HALF_WIDTH = 18;
-    private static final double MAX_FIRE_TOLERANCE = Math.toRadians(5);
-    private static final double MIN_FIRE_TOLERANCE = Math.toRadians(1);
+    private AdvancedRobot robot;
+    private GuessFactorTargeting guessFactorTargeting;
+    private VirtualGuns virtualGuns;
+    
+    // Controlo de desempenho para ajuste de potência
+    private double totalShots = 0;
+    private double totalHits = 0;
 
-    private final AdvancedRobot robot;
-    private final BattleField field;
-    private final Targeting targeting;
-    private final ShotStats stats;
-
-    public GunController(AdvancedRobot robot, BattleField field,
-                         Targeting targeting, ShotStats stats) {
+    public GunController(AdvancedRobot robot) {
         this.robot = robot;
-        this.field = field;
-        this.targeting = targeting;
-        this.stats = stats;
+        this.guessFactorTargeting = new GuessFactorTargeting(robot);
+        this.virtualGuns = new VirtualGuns(robot);
     }
 
-    public void initRound() {
-        robot.setAdjustGunForRobotTurn(true);
-        robot.setAdjustRadarForGunTurn(true);
+    public void onScannedRobot(ScannedRobotEvent e) {
+        guessFactorTargeting.onScannedRobot(e);
+        virtualGuns.onScannedRobot(e);
     }
 
-    public void execute(Enemy target) {
-        if (target == null) {
+    public void onBulletHit(robocode.BulletHitEvent e) {
+        totalHits++;
+        totalShots++;
+        virtualGuns.onBulletHit(e);
+    }
+
+    public void onBulletMissed(robocode.BulletMissedEvent e) {
+        totalShots++;
+        virtualGuns.onBulletMissed(e);
+    }
+
+    public void onTick() {
+        guessFactorTargeting.onTick();
+        virtualGuns.onTick();
+    }
+
+    public void fire(ScannedRobotEvent e) {
+        double enemyDistance = e.getDistance();
+        
+        // Se o inimigo estiver muito perto, usa potência máxima para estrangular
+        if (enemyDistance < 100) {
+            double power = Math.min(3.0, robot.getEnergy() - 1);
+            if (power > 0.1) {
+                Bullet b = robot.fireBullet(power);
+                if (b != null) guessFactorTargeting.registerBullet(b, e);
+            }
             return;
         }
-        targeting.onTick(target, robot.getTime());
 
-        double myX = robot.getX();
-        double myY = robot.getY();
-        double distance = Point2D.distance(myX, myY, target.x, target.y);
+        // --- CÁLCULO DE POTÊNCIA DINÂMICA (Ronda 6) ---
+        double basePower = calculateDynamicPower(e);
+        
+        // Garante que nunca gastamos mais energia do que o necessário para matar ou do que temos disponível
+        double maxPowerForEnergy = robot.getEnergy() - 1;
+        double maxPowerToKill = (e.getEnergy() + 4) / 4; // Estimativa para poupar energia se o inimigo estiver fraco
+        
+        double finalPower = Math.min(basePower, maxPowerForEnergy);
+        finalPower = Math.min(finalPower, maxPowerToKill);
+        finalPower = Math.max(0.1, Math.min(3.0, finalPower));
 
-        double power = selectPower(target, distance);
-        double bulletSpeed = 20 - 3 * power;
-        targeting.onAim(target, myX, myY, bulletSpeed, robot.getTime());
-
-        double aimAngle = targeting.aimAngle(target, myX, myY, bulletSpeed, field);
-        double gunTurn = Utils.normalRelativeAngle(aimAngle - robot.getGunHeadingRadians());
-        robot.setTurnGunRightRadians(gunTurn);
-
-        if (robot.getGunHeat() == 0
-                && Math.abs(robot.getGunTurnRemainingRadians()) < fireTolerance(distance)
-                && robot.getEnergy() > power
-                && robot.setFireBullet(power) != null) {
-            stats.shotFired();
-            targeting.onFire(target, myX, myY, bulletSpeed, robot.getTime());
+        // Dispara utilizando a melhor arma selecionada pelas VirtualGuns
+        Bullet bullet = virtualGuns.fire(e, finalPower);
+        if (bullet != null) {
+            guessFactorTargeting.registerBullet(bullet, e);
         }
     }
 
-    /**
-     * Potência pela distância, limitada pela nossa energia e pelo que é
-     * necessário para matar o alvo (não gasta energia à toa num inimigo quase morto).
-     */
-    private double selectPower(Enemy target, double distance) {
-        double power;
-        if (robot.getEnergy() < 15) {
-            power = 0.8;
-        } else if (distance > 500) {
-            power = 1.0;
-        } else if (distance > 250) {
-            power = 1.7;
+    private double calculateDynamicPower(ScannedRobotEvent e) {
+        double hitRate = (totalShots > 0) ? (totalHits / totalShots) : 0.5;
+        double ourEnergy = robot.getEnergy();
+        double enemyEnergy = e.getEnergy();
+
+        // Se estamos com pouca energia comparado ao inimigo, conservamos energia com tiros mais fracos e seguros
+        if (ourEnergy < enemyEnergy - 20) {
+            return 1.2;
+        }
+
+        // Se a nossa taxa de acerto está alta, podemos arriscar tiros mais pesados
+        if (hitRate > 0.4) {
+            return 2.4;
+        }
+
+        // Padrão equilibrado baseado na distância
+        if (e.getDistance() > 400) {
+            return 1.5;
         } else {
-            power = 2.2;
+            return 2.0;
         }
-        power = Math.min(power, Math.max(MIN_POWER, robot.getEnergy() / 5));
-        power = Math.min(power, powerToKill(target.energy));
-        return Math.max(MIN_POWER, power);
     }
 
-    /** Menor potência cujo dano mata um inimigo com essa energia. */
-    private static double powerToKill(double enemyEnergy) {
-        if (enemyEnergy <= 4) {
-            return enemyEnergy / 4;
-        }
-        return (enemyEnergy + 2) / 6;
-    }
-
-    /** Quanto o canhão pode estar fora da mira: menor quanto mais longe o alvo. */
-    private static double fireTolerance(double distance) {
-        double angle = Math.atan(ROBOT_HALF_WIDTH / Math.max(distance, 1));
-        return Math.max(MIN_FIRE_TOLERANCE, Math.min(MAX_FIRE_TOLERANCE, angle));
+    public void notifyHitByBullet(robocode.BulletBulletEvent e) {
+        // Repassado caso necessário para estatísticas de defesa
     }
 }
