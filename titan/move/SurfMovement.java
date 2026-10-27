@@ -2,6 +2,8 @@ package titan.move;
 
 import java.awt.geom.Point2D;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -16,11 +18,17 @@ import titan.utils.Enemy;
 import titan.utils.Geometry;
 
 /**
- * Movimento 1v1 com wave surfing simples.
+ * Movimento 1v1 com wave surfing.
  *
- * Quando o inimigo atira (queda de energia), cria-se uma onda. Antes de ela
- * chegar, o robô simula ir pelo sentido horário e pelo anti-horário e escolhe
- * o lado onde, historicamente, o inimigo mais raramente nos acertou.
+ * Quando o inimigo atira (queda de energia), cria-se uma onda. O robô simula
+ * seguir pelo sentido horário e pelo anti-horário considerando as DUAS ondas
+ * mais próximas, e escolhe o lado com menor perigo.
+ *
+ * O perigo vem de dois perfis aprendidos sobre o inimigo:
+ *  - onde fomos acertados (separado por distância e velocidade nossa);
+ *  - por onde passamos em todas as ondas, acertando ou não. Esse perfil só
+ *    pesa quando o inimigo está acertando bastante, e faz o robô "achatar"
+ *    o próprio padrão, para uma mira estatística não achar um pico.
  * Sem ondas no ar, só orbita mantendo a distância ideal.
  */
 public class SurfMovement {
@@ -36,8 +44,25 @@ public class SurfMovement {
     private static final double IDEAL_DISTANCE = 350;
     private static final double MAX_DISTANCE_TILT = 0.5;
 
+    // segmentação do perfil de acertos: distância do inimigo x nossa velocidade lateral
+    private static final int DISTANCE_SEGMENTS = 3;
+    private static final int SPEED_SEGMENTS = 3;
+    private static final int SEGMENTS = DISTANCE_SEGMENTS * SPEED_SEGMENTS;
+    private static final int GLOBAL_ROW = SEGMENTS; // última linha = todos os acertos
+    private static final double GLOBAL_WEIGHT = 0.3;
+
+    // quantas ondas considerar na simulação e o peso de cada uma
+    private static final double[] WAVE_WEIGHTS = {1.0, 0.5};
+
+    private static final double HIT_DECAY = 0.98;
+    private static final double VISIT_DECAY = 0.99;
+    private static final double RATE_DECAY = 0.98;
+    private static final double FLATTEN_START_RATE = 0.06; // taxa de acerto do inimigo
+    private static final double FLATTEN_FULL_RATE = 0.18;
+    private static final double FLATTEN_MAX = 0.6;
+
     // static: o que aprendemos sobre o inimigo sobrevive entre rounds
-    private static final Map<String, double[]> DANGER = new HashMap<String, double[]>();
+    private static final Map<String, Profile> PROFILES = new HashMap<String, Profile>();
 
     private final AdvancedRobot robot;
     private final BattleField field;
@@ -57,6 +82,7 @@ public class SurfMovement {
     private double previousY;
     private double previousAbsBearing;
     private int previousLateralDirection = 1;
+    private int previousSegment;
 
     public SurfMovement(AdvancedRobot robot, BattleField field) {
         this.robot = robot;
@@ -73,19 +99,24 @@ public class SurfMovement {
         double myX = robot.getX();
         double myY = robot.getY();
 
-        removePassedWaves(now, myX, myY);
-        EnemyWave wave = closestWave(now, myX, myY);
+        updateWaves(now, myX, myY);
+        final List<EnemyWave> targets = closestWaves(now, myX, myY, WAVE_WEIGHTS.length);
 
         double goAngle;
-        if (wave != null) {
-            double dangerClockwise = checkDanger(wave, 1, now);
-            double dangerCounter = checkDanger(wave, -1, now);
+        if (!targets.isEmpty()) {
+            List<double[]> profiles = new ArrayList<double[]>();
+            for (EnemyWave wave : targets) {
+                profiles.add(dangerProfile(wave));
+            }
+            double dangerClockwise = predictDanger(1, targets, profiles, now);
+            double dangerCounter = predictDanger(-1, targets, profiles, now);
             if (dangerCounter < dangerClockwise) {
                 direction = -1;
             } else if (dangerClockwise < dangerCounter) {
                 direction = 1;
             }
-            double tangent = Geometry.absoluteBearing(wave.sourceX, wave.sourceY, myX, myY)
+            EnemyWave first = targets.get(0);
+            double tangent = Geometry.absoluteBearing(first.sourceX, first.sourceY, myX, myY)
                     + direction * Math.PI / 2;
             goAngle = wallSmoothing(myX, myY, tangent, direction);
         } else {
@@ -131,7 +162,10 @@ public class SurfMovement {
                 && enemy.lastSeen - previousTime <= 2) {
             waves.add(new EnemyWave(enemy.name, previousX, previousY,
                     previousAbsBearing, previousLateralDirection,
-                    20 - 3 * drop, enemy.lastSeen - 1));
+                    20 - 3 * drop, enemy.lastSeen - 1, previousSegment));
+            // Inverte a cada tiro detectado. Só vale quando o perigo dos dois lados
+            // empata (ainda sem dados); com dados, a simulação decide a direção.
+            direction = -direction;
         }
 
         hasPrevious = true;
@@ -140,6 +174,7 @@ public class SurfMovement {
         previousY = enemy.y;
         previousAbsBearing = absBearing;
         previousLateralDirection = lateralDirection;
+        previousSegment = segment(Point2D.distance(myX, myY, enemy.x, enemy.y), Math.abs(lateral));
     }
 
     public void onBulletHit(BulletHitEvent e) {
@@ -169,7 +204,11 @@ public class SurfMovement {
             }
         }
         if (match != null) {
-            logHit(match, bullet.getX(), bullet.getY());
+            if (!match.broken) {
+                match.broken = true;
+                registerBreak(match, bullet.getX(), bullet.getY());
+            }
+            registerHit(match, bullet.getX(), bullet.getY());
             waves.remove(match);
         }
     }
@@ -180,76 +219,99 @@ public class SurfMovement {
 
     // ------------------------------------------------------------------- ondas
 
-    private void removePassedWaves(long now, double myX, double myY) {
+    /** Registra as ondas que passaram por nós e descarta as que já ficaram para trás. */
+    private void updateWaves(long now, double myX, double myY) {
         Iterator<EnemyWave> it = waves.iterator();
         while (it.hasNext()) {
             EnemyWave wave = it.next();
             double radius = (now - wave.fireTime) * wave.speed;
-            if (radius > Point2D.distance(myX, myY, wave.sourceX, wave.sourceY) + 50) {
+            double distance = Point2D.distance(myX, myY, wave.sourceX, wave.sourceY);
+            if (!wave.broken && radius >= distance) {
+                wave.broken = true;
+                registerBreak(wave, myX, myY);
+            }
+            if (radius > distance + 50) {
                 it.remove();
             }
         }
     }
 
-    /** A onda que vai nos alcançar primeiro. */
-    private EnemyWave closestWave(long now, double myX, double myY) {
-        EnemyWave closest = null;
-        double closestDistance = Double.MAX_VALUE;
+    /** As ondas que vão nos alcançar primeiro, da mais próxima para a mais distante. */
+    private List<EnemyWave> closestWaves(final long now, final double myX, final double myY,
+                                         int max) {
+        List<EnemyWave> candidates = new ArrayList<EnemyWave>();
         for (EnemyWave wave : waves) {
-            double radius = (now - wave.fireTime) * wave.speed;
-            double distance = Point2D.distance(myX, myY, wave.sourceX, wave.sourceY) - radius;
-            if (distance > wave.speed && distance < closestDistance) {
-                closest = wave;
-                closestDistance = distance;
+            if (timeToImpact(wave, now, myX, myY) > wave.speed) {
+                candidates.add(wave);
             }
         }
-        return closest;
+        Collections.sort(candidates, new Comparator<EnemyWave>() {
+            @Override
+            public int compare(EnemyWave a, EnemyWave b) {
+                return Double.compare(timeToImpact(a, now, myX, myY),
+                        timeToImpact(b, now, myX, myY));
+            }
+        });
+        return candidates.size() > max ? new ArrayList<EnemyWave>(candidates.subList(0, max))
+                : candidates;
+    }
+
+    /** Distância que a onda ainda precisa percorrer até a nossa posição. */
+    private static double timeToImpact(EnemyWave wave, long now, double myX, double myY) {
+        double radius = (now - wave.fireTime) * wave.speed;
+        return Point2D.distance(myX, myY, wave.sourceX, wave.sourceY) - radius;
     }
 
     // ------------------------------------------------------------------ perigo
 
-    private double checkDanger(EnemyWave wave, int dir, long now) {
-        Point2D.Double position = predictPosition(wave, dir, now);
-        return dangerFor(wave.enemyName)[factorIndex(wave, position.x, position.y)];
-    }
-
-    /** Simula (com a física do Robocode) nós seguindo na direção dir até a onda chegar. */
-    private Point2D.Double predictPosition(EnemyWave wave, int dir, long now) {
+    /**
+     * Simula (com a física do Robocode) nós seguindo na direção dir e soma o
+     * perigo no ponto onde cada onda nos alcança.
+     */
+    private double predictDanger(int dir, List<EnemyWave> targets, List<double[]> profiles,
+                                 long now) {
         double x = robot.getX();
         double y = robot.getY();
         double heading = robot.getHeadingRadians();
         double velocity = robot.getVelocity();
-        double radiusNow = (now - wave.fireTime) * wave.speed;
+        int elapsed = 0;
+        double total = 0;
 
-        int counter = 0;
-        boolean intercepted = false;
-        while (!intercepted && counter < MAX_PREDICT_TICKS) {
-            double tangent = Geometry.absoluteBearing(wave.sourceX, wave.sourceY, x, y)
-                    + dir * Math.PI / 2;
-            double moveAngle = wallSmoothing(x, y, tangent, dir) - heading;
-            double moveDir = 1;
-            if (Math.cos(moveAngle) < 0) {
-                moveAngle += Math.PI;
-                moveDir = -1;
+        for (int k = 0; k < targets.size(); k++) {
+            EnemyWave wave = targets.get(k);
+            double radiusNow = (now - wave.fireTime) * wave.speed;
+            while (elapsed < MAX_PREDICT_TICKS && !reached(wave, radiusNow, elapsed, x, y)) {
+                double tangent = Geometry.absoluteBearing(wave.sourceX, wave.sourceY, x, y)
+                        + dir * Math.PI / 2;
+                double moveAngle = wallSmoothing(x, y, tangent, dir) - heading;
+                double moveDir = 1;
+                if (Math.cos(moveAngle) < 0) {
+                    moveAngle += Math.PI;
+                    moveDir = -1;
+                }
+                moveAngle = Utils.normalRelativeAngle(moveAngle);
+
+                double maxTurn = Math.PI / 720 * (40 - 3 * Math.abs(velocity));
+                heading = Utils.normalRelativeAngle(
+                        heading + limit(-maxTurn, moveAngle, maxTurn));
+
+                velocity += (velocity * moveDir < 0 ? 2 * moveDir : moveDir);
+                velocity = limit(-MAX_ROBOT_SPEED, velocity, MAX_ROBOT_SPEED);
+
+                x += Math.sin(heading) * velocity;
+                y += Math.cos(heading) * velocity;
+                elapsed++;
             }
-            moveAngle = Utils.normalRelativeAngle(moveAngle);
-
-            double maxTurn = Math.PI / 720 * (40 - 3 * Math.abs(velocity));
-            heading = Utils.normalRelativeAngle(heading + limit(-maxTurn, moveAngle, maxTurn));
-
-            velocity += (velocity * moveDir < 0 ? 2 * moveDir : moveDir);
-            velocity = limit(-MAX_ROBOT_SPEED, velocity, MAX_ROBOT_SPEED);
-
-            x += Math.sin(heading) * velocity;
-            y += Math.cos(heading) * velocity;
-            counter++;
-
-            if (Point2D.distance(x, y, wave.sourceX, wave.sourceY)
-                    < radiusNow + counter * wave.speed + wave.speed) {
-                intercepted = true;
-            }
+            double weight = k < WAVE_WEIGHTS.length ? WAVE_WEIGHTS[k] : 0;
+            total += weight * profiles.get(k)[factorIndex(wave, x, y)];
         }
-        return new Point2D.Double(x, y);
+        return total;
+    }
+
+    private static boolean reached(EnemyWave wave, double radiusNow, int elapsed,
+                                   double x, double y) {
+        return Point2D.distance(x, y, wave.sourceX, wave.sourceY)
+                < radiusNow + elapsed * wave.speed + wave.speed;
     }
 
     /** Gira o ângulo para longe da parede até o ponto à frente caber no campo. */
@@ -263,11 +325,65 @@ public class SurfMovement {
         return angle;
     }
 
-    private void logHit(EnemyWave wave, double x, double y) {
-        int index = factorIndex(wave, x, y);
-        double[] danger = dangerFor(wave.enemyName);
+    /** Perigo de cada bin da onda: mistura do perfil de acertos com o de passagens. */
+    private double[] dangerProfile(EnemyWave wave) {
+        Profile profile = profileFor(wave.enemyName);
+        double[] segment = profile.hits[wave.segment];
+        double[] global = profile.hits[GLOBAL_ROW];
+
+        double[] hits = new double[BINS];
+        double hitsTotal = 0;
+        double visitsTotal = 0;
         for (int i = 0; i < BINS; i++) {
-            danger[i] += 1.0 / (1 + (i - index) * (i - index));
+            hits[i] = segment[i] + GLOBAL_WEIGHT * global[i];
+            hitsTotal += hits[i];
+            visitsTotal += profile.visits[i];
+        }
+
+        double flatten = flattenFactor(profile);
+        double[] danger = new double[BINS];
+        for (int i = 0; i < BINS; i++) {
+            double hitPart = hitsTotal > 0 ? hits[i] / hitsTotal : 0;
+            double visitPart = visitsTotal > 0 ? profile.visits[i] / visitsTotal : 0;
+            danger[i] = (1 - flatten) * hitPart + flatten * visitPart;
+        }
+        return danger;
+    }
+
+    /** 0 = só desvia dos acertos; sobe até FLATTEN_MAX quanto mais o inimigo acerta. */
+    private static double flattenFactor(Profile profile) {
+        if (profile.breakCount < 5) {
+            return 0;
+        }
+        double rate = profile.hitCount / profile.breakCount;
+        double t = limit(0, (rate - FLATTEN_START_RATE)
+                / (FLATTEN_FULL_RATE - FLATTEN_START_RATE), 1);
+        return t * FLATTEN_MAX;
+    }
+
+    // ---------------------------------------------------------------- registro
+
+    /** Uma onda nos alcançou (acertando ou não): anota por onde passamos. */
+    private void registerBreak(EnemyWave wave, double x, double y) {
+        Profile profile = profileFor(wave.enemyName);
+        profile.hitCount *= RATE_DECAY;
+        profile.breakCount = profile.breakCount * RATE_DECAY + 1;
+        addKernel(profile.visits, factorIndex(wave, x, y), VISIT_DECAY);
+    }
+
+    /** A bala dessa onda nos acertou nesse ponto. */
+    private void registerHit(EnemyWave wave, double x, double y) {
+        Profile profile = profileFor(wave.enemyName);
+        profile.hitCount += 1;
+        int index = factorIndex(wave, x, y);
+        addKernel(profile.hits[wave.segment], index, HIT_DECAY);
+        addKernel(profile.hits[GLOBAL_ROW], index, HIT_DECAY);
+    }
+
+    private static void addKernel(double[] bins, int index, double decay) {
+        for (int i = 0; i < BINS; i++) {
+            bins[i] *= decay;
+            bins[i] += 1.0 / (1 + (i - index) * (i - index));
         }
     }
 
@@ -280,17 +396,31 @@ public class SurfMovement {
         return (int) Math.round(MIDDLE + factor * MIDDLE);
     }
 
-    private static double[] dangerFor(String name) {
-        double[] danger = DANGER.get(name);
-        if (danger == null) {
-            danger = new double[BINS];
-            DANGER.put(name, danger);
+    private static int segment(double distance, double lateralSpeed) {
+        int d = distance < 250 ? 0 : (distance < 450 ? 1 : 2);
+        int s = lateralSpeed < 2 ? 0 : (lateralSpeed < 5.5 ? 1 : 2);
+        return d * SPEED_SEGMENTS + s;
+    }
+
+    private static Profile profileFor(String name) {
+        Profile profile = PROFILES.get(name);
+        if (profile == null) {
+            profile = new Profile();
+            PROFILES.put(name, profile);
         }
-        return danger;
+        return profile;
     }
 
     private static double limit(double min, double value, double max) {
         return Math.max(min, Math.min(max, value));
+    }
+
+    /** O que aprendemos sobre a mira de um inimigo. */
+    private static final class Profile {
+        final double[][] hits = new double[SEGMENTS + 1][BINS];
+        final double[] visits = new double[BINS];
+        double hitCount;
+        double breakCount;
     }
 
     /** Onda de um tiro do inimigo. */
@@ -302,9 +432,11 @@ public class SurfMovement {
         final int direction;
         final double speed;
         final long fireTime;
+        final int segment;
+        boolean broken; // já alcançou nossa posição
 
         EnemyWave(String enemyName, double sourceX, double sourceY, double refAngle,
-                  int direction, double speed, long fireTime) {
+                  int direction, double speed, long fireTime, int segment) {
             this.enemyName = enemyName;
             this.sourceX = sourceX;
             this.sourceY = sourceY;
@@ -312,6 +444,7 @@ public class SurfMovement {
             this.direction = direction;
             this.speed = speed;
             this.fireTime = fireTime;
+            this.segment = segment;
         }
     }
 }
