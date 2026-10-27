@@ -23,7 +23,7 @@ import titan.utils.Enemy;
  * Robô principal. Só coordena os módulos (radar, movimento, arma);
  * a lógica de cada um fica no seu pacote.
  */
-public class TitanDiamond extends AdvancedRobot {
+public class TitanD extends AdvancedRobot {
     private static final double MOVE_MARGIN = 40;
     private static final double TARGET_MARGIN = 18;
 
