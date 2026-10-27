@@ -11,8 +11,11 @@ import robocode.HitWallEvent;
 import robocode.RobotDeathEvent;
 import robocode.ScannedRobotEvent;
 import robocode.WinEvent;
+import titan.gun.CircularTargeting;
 import titan.gun.GuessFactorTargeting;
 import titan.gun.GunController;
+import titan.gun.LinearTargeting;
+import titan.gun.VirtualGuns;
 import titan.move.SurfMovement;
 import titan.radar.RadarLock;
 import titan.stats.ShotStats;
@@ -60,9 +63,14 @@ public class TitanD extends AdvancedRobot {
 
         radar = new RadarLock(this);
         move = new SurfMovement(this, new BattleField(width, height, MOVE_MARGIN));
-        gun = new GunController(this,
-                new BattleField(width, height, TARGET_MARGIN),
-                new GuessFactorTargeting(), stats);
+        BattleField targetField = new BattleField(width, height, TARGET_MARGIN);
+        // a primeira mira da lista é a usada enquanto não há dados para comparar
+        gun = new GunController(this, targetField,
+                new VirtualGuns(targetField,
+                        new CircularTargeting(),
+                        new LinearTargeting(),
+                        new GuessFactorTargeting()),
+                stats);
 
         radar.initRound();
         gun.initRound();
