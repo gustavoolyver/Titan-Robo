@@ -13,6 +13,14 @@ public interface Targeting {
     default void onTick(Enemy enemy, long time) {
     }
 
+    /**
+     * Chamado todo turno com a velocidade de bala que usaríamos agora, mesmo sem
+     * atirar. Miras que aprendem criam "tiros virtuais" aqui.
+     */
+    default void onAim(Enemy enemy, double myX, double myY,
+                       double bulletSpeed, long time) {
+    }
+
     /** Chamado logo depois que um tiro é disparado. */
     default void onFire(Enemy enemy, double myX, double myY,
                         double bulletSpeed, long time) {
