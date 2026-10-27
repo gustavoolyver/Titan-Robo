@@ -36,6 +36,8 @@ public class GunController {
         if (target == null) {
             return;
         }
+        targeting.onTick(target, robot.getTime());
+
         double myX = robot.getX();
         double myY = robot.getY();
         double distance = Point2D.distance(myX, myY, target.x, target.y);
@@ -52,6 +54,7 @@ public class GunController {
                 && robot.getEnergy() > power
                 && robot.setFireBullet(power) != null) {
             stats.shotFired();
+            targeting.onFire(target, myX, myY, bulletSpeed, robot.getTime());
         }
     }
 
