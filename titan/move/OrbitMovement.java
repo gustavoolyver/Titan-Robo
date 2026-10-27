@@ -8,12 +8,17 @@ import titan.utils.BattleField;
 import titan.utils.Enemy;
 import titan.utils.Geometry;
 
-/** Movimento: orbita o alvo e inverte a direção quando ele parece ter atirado. */
+/** Movimento: orbita o alvo, mantém uma distância ideal e inverte quando ele parece ter atirado. */
 public class OrbitMovement {
     private static final double STEP = 140;
     private static final double MIN_BULLET_POWER = 0.1;
     private static final double MAX_BULLET_POWER = 3.0;
     private static final int MAX_WALL_ATTEMPTS = 30;
+
+    // distância que tentamos manter do alvo e o quanto podemos "inclinar" a órbita
+    // para nos aproximar (alvo longe) ou afastar (alvo perto)
+    private static final double IDEAL_DISTANCE = 350;
+    private static final double MAX_DISTANCE_TILT = 0.5; // radianos (~29 graus)
 
     private final AdvancedRobot robot;
     private final BattleField field;
@@ -37,7 +42,10 @@ public class OrbitMovement {
         double bearing = Geometry.absoluteBearing(myX, myY, enemy.x, enemy.y);
         double distance = Point2D.distance(myX, myY, enemy.x, enemy.y);
 
-        double orbitAngle = bearing + Math.PI / 2 * direction;
+        // tilt > 0: alvo longe, inclina a órbita em direção a ele; tilt < 0: alvo perto, afasta
+        double tilt = Math.max(-1, Math.min(1, (distance - IDEAL_DISTANCE) / IDEAL_DISTANCE))
+                * MAX_DISTANCE_TILT;
+        double orbitAngle = bearing + direction * (Math.PI / 2 - tilt);
         double destX = myX + Math.sin(orbitAngle) * STEP;
         double destY = myY + Math.cos(orbitAngle) * STEP;
 
