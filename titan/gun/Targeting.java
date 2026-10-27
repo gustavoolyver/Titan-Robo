@@ -8,4 +8,13 @@ public interface Targeting {
     /** Ângulo absoluto (radianos) para onde apontar. */
     double aimAngle(Enemy enemy, double myX, double myY,
                     double bulletSpeed, BattleField field);
+
+    /** Chamado a cada turno com o alvo atual. Mira que aprende usa isto; as simples ignoram. */
+    default void onTick(Enemy enemy, long time) {
+    }
+
+    /** Chamado logo depois que um tiro é disparado. */
+    default void onFire(Enemy enemy, double myX, double myY,
+                        double bulletSpeed, long time) {
+    }
 }
