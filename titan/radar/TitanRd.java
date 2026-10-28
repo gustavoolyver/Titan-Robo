@@ -2,10 +2,10 @@ package titan.radar;
 
 import robocode.AdvancedRobot;
 
-public class DiamondEyes {
+public class TitanRd {
     private final AdvancedRobot robot;
 
-    public DiamondEyes(AdvancedRobot robot) {
+    public TitanRd(AdvancedRobot robot) {
         this.robot = robot;
     }
 
