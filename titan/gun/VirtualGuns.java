@@ -2,6 +2,7 @@ package titan.gun;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -9,6 +10,8 @@ import robocode.util.Utils;
 import titan.utils.BattleField;
 import titan.utils.Enemy;
 import titan.utils.Geometry;
+import titan.stats.LearningStore;
+import robocode.AdvancedRobot;
 
 /**
  * Várias miras em paralelo. A cada turno cada mira "atira" uma onda virtual;
@@ -25,7 +28,7 @@ public class VirtualGuns implements Targeting {
 
     // static: o desempenho de cada mira sobrevive entre rounds da mesma batalha
     // scores[mira][0] = acertos (com decaimento), scores[mira][1] = tentativas
-    private static final Map<String, double[][]> SCORES = new HashMap<String, double[][]>();
+    private static final Map<String, double[][]> SCORES = new LinkedHashMap<String, double[][]>(16, 0.75f, true);
 
     private final BattleField field;
     private final Targeting[] guns;
@@ -34,6 +37,18 @@ public class VirtualGuns implements Targeting {
     public VirtualGuns(BattleField field, Targeting... guns) {
         this.field = field;
         this.guns = guns;
+    }
+
+    public static void load(AdvancedRobot robot) {
+        Map<String, double[][]> loaded = LearningStore.load(robot, "VirtualGuns.dat", 3, 2);
+        if (loaded != null) {
+            SCORES.clear();
+            SCORES.putAll(loaded);
+        }
+    }
+
+    public static void save(AdvancedRobot robot) {
+        LearningStore.save(robot, "VirtualGuns.dat", SCORES);
     }
 
     @Override
@@ -77,10 +92,14 @@ public class VirtualGuns implements Targeting {
         Iterator<VirtualWave> it = waves.iterator();
         while (it.hasNext()) {
             VirtualWave wave = it.next();
+            double radius = (time - wave.fireTime) * wave.speed;
+            if (radius > MAX_WAVE_RADIUS) {
+                it.remove();
+                continue;
+            }
             if (!wave.enemyName.equals(enemy.name)) {
                 continue;
             }
-            double radius = (time - wave.fireTime) * wave.speed;
             double distance = Math.hypot(enemy.x - wave.sourceX, enemy.y - wave.sourceY);
             if (radius >= distance) {
                 score(wave, enemy, distance);
