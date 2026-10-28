@@ -1,6 +1,6 @@
 package titan.gun;
 
-public class DiamondFist {
+public class TitanFist {
     private final AntiSurferGun antiSurferGun = new AntiSurferGun();
     private final MainGun mainGun = new MainGun();
 
