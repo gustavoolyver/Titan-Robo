@@ -3,6 +3,7 @@ package titan.gun;
 import java.awt.geom.Point2D;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -10,6 +11,8 @@ import robocode.util.Utils;
 import titan.utils.BattleField;
 import titan.utils.Enemy;
 import titan.utils.Geometry;
+import titan.stats.LearningStore;
+import robocode.AdvancedRobot;
 
 /**
  * Mira GuessFactor com tiros virtuais.
@@ -40,10 +43,22 @@ public class GuessFactorTargeting implements Targeting {
     private static final double MAX_ROBOT_SPEED = 8;
 
     // static: os dados sobrevivem entre rounds da mesma batalha
-    private static final Map<String, double[][]> STATS = new HashMap<String, double[][]>();
+    private static final Map<String, double[][]> STATS = new LinkedHashMap<String, double[][]>(16, 0.75f, true);
 
     private final List<Wave> waves = new ArrayList<Wave>();
     private final Targeting fallback = new CircularTargeting();
+
+    public static void load(AdvancedRobot robot) {
+        Map<String, double[][]> loaded = LearningStore.load(robot, "GuessFactorTargeting.dat", SEGMENTS + 1, BINS);
+        if (loaded != null) {
+            STATS.clear();
+            STATS.putAll(loaded);
+        }
+    }
+
+    public static void save(AdvancedRobot robot) {
+        LearningStore.save(robot, "GuessFactorTargeting.dat", STATS);
+    }
 
     @Override
     public double aimAngle(Enemy enemy, double myX, double myY,
@@ -95,10 +110,14 @@ public class GuessFactorTargeting implements Targeting {
         Iterator<Wave> it = waves.iterator();
         while (it.hasNext()) {
             Wave wave = it.next();
+            double radius = (time - wave.fireTime) * wave.speed;
+            if (radius > MAX_WAVE_RADIUS) {
+                it.remove();
+                continue;
+            }
             if (!wave.enemyName.equals(enemy.name)) {
                 continue;
             }
-            double radius = (time - wave.fireTime) * wave.speed;
             double distance = Point2D.distance(wave.sourceX, wave.sourceY, enemy.x, enemy.y);
             if (radius >= distance) {
                 record(wave, enemy);
