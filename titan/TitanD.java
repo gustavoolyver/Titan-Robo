@@ -26,7 +26,7 @@ import titan.utils.Enemy;
  * Robô principal. Só coordena os módulos (radar, movimento, arma);
  * a lógica de cada um fica no seu pacote.
  */
-public class TitanD extends AdvancedRobot {
+public class TitanV3 extends AdvancedRobot {
     private static final double MOVE_MARGIN = 40;
     private static final double TARGET_MARGIN = 18;
 
@@ -60,6 +60,9 @@ public class TitanD extends AdvancedRobot {
 
         stats = new ShotStats(this);
         stats.load();
+        VirtualGuns.load(this);
+        GuessFactorTargeting.load(this);
+        SurfMovement.load(this);
 
         radar = new RadarLock(this);
         move = new SurfMovement(this, new BattleField(width, height, MOVE_MARGIN));
@@ -127,14 +130,21 @@ public class TitanD extends AdvancedRobot {
         }
     }
 
+    private void saveLearning() {
+        stats.save();
+        VirtualGuns.save(this);
+        GuessFactorTargeting.save(this);
+        SurfMovement.save(this);
+    }
+
     @Override
     public void onWin(WinEvent e) {
-        stats.save();
+        saveLearning();
         setTurnRight(360);
     }
 
     @Override
     public void onDeath(DeathEvent e) {
-        stats.save();
+        saveLearning();
     }
 }
