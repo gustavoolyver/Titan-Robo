@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,7 @@ import robocode.util.Utils;
 import titan.utils.BattleField;
 import titan.utils.Enemy;
 import titan.utils.Geometry;
+import titan.stats.LearningStore;
 
 /**
  * Movimento 1v1 com wave surfing.
@@ -62,7 +64,7 @@ public class SurfMovement {
     private static final double FLATTEN_MAX = 0.6;
 
     // static: o que aprendemos sobre o inimigo sobrevive entre rounds
-    private static final Map<String, Profile> PROFILES = new HashMap<String, Profile>();
+    private static final Map<String, Profile> PROFILES = new LinkedHashMap<String, Profile>(16, 0.75f, true);
 
     private final AdvancedRobot robot;
     private final BattleField field;
@@ -71,18 +73,49 @@ public class SurfMovement {
     // +1 = sentido horário em volta do inimigo, -1 = anti-horário
     private int direction = 1;
 
-    // dano que o NOSSO tiro causou no inimigo, para não confundir com um tiro dele
-    private String hitVictim;
-    private double hitDamage;
+    // Cada adversario tem seu proprio scan e dano pendente.
+    private final Map<String, ScanState> scans = new HashMap<String, ScanState>();
+    private final Map<String, Double> ownDamage = new HashMap<String, Double>();
 
-    // estado do scan anterior (o tiro aconteceu antes do scan em que vimos a queda)
-    private boolean hasPrevious;
-    private long previousTime;
-    private double previousX;
-    private double previousY;
-    private double previousAbsBearing;
-    private int previousLateralDirection = 1;
-    private int previousSegment;
+    private static final class ScanState {
+        long time;
+        double x, y, bearing;
+        int direction, segment;
+    }
+
+    public static void load(AdvancedRobot robot) {
+        Map<String, double[][]> data = LearningStore.load(robot,
+                "SurfMovement.dat", SEGMENTS + 3, BINS);
+        if (data == null) return;
+        PROFILES.clear();
+        for (Map.Entry<String, double[][]> entry : data.entrySet()) {
+            Profile profile = new Profile();
+            double[][] rows = entry.getValue();
+            for (int i = 0; i <= SEGMENTS; i++) {
+                System.arraycopy(rows[i], 0, profile.hits[i], 0, BINS);
+            }
+            System.arraycopy(rows[SEGMENTS + 1], 0, profile.visits, 0, BINS);
+            profile.hitCount = rows[SEGMENTS + 2][0];
+            profile.breakCount = rows[SEGMENTS + 2][1];
+            PROFILES.put(entry.getKey(), profile);
+        }
+    }
+
+    public static void save(AdvancedRobot robot) {
+        Map<String, double[][]> data = new LinkedHashMap<String, double[][]>();
+        for (Map.Entry<String, Profile> entry : PROFILES.entrySet()) {
+            Profile profile = entry.getValue();
+            double[][] rows = new double[SEGMENTS + 3][BINS];
+            for (int i = 0; i <= SEGMENTS; i++) {
+                System.arraycopy(profile.hits[i], 0, rows[i], 0, BINS);
+            }
+            System.arraycopy(profile.visits, 0, rows[SEGMENTS + 1], 0, BINS);
+            rows[SEGMENTS + 2][0] = profile.hitCount;
+            rows[SEGMENTS + 2][1] = profile.breakCount;
+            data.put(entry.getKey(), rows);
+        }
+        LearningStore.save(robot, "SurfMovement.dat", data);
+    }
 
     public SurfMovement(AdvancedRobot robot, BattleField field) {
         this.robot = robot;
@@ -149,38 +182,39 @@ public class SurfMovement {
         double myY = robot.getY();
         double absBearing = Geometry.absoluteBearing(enemy.x, enemy.y, myX, myY);
         double lateral = robot.getVelocity() * Math.sin(robot.getHeadingRadians() - absBearing);
-        int lateralDirection = lateral > 0 ? 1 : (lateral < 0 ? -1 : previousLateralDirection);
+        ScanState previous = scans.get(enemy.name);
+        int oldDirection = previous == null ? 1 : previous.direction;
+        int lateralDirection = lateral > 0 ? 1 : (lateral < 0 ? -1 : oldDirection);
 
         double drop = enemy.energyDrop();
-        if (enemy.name.equals(hitVictim)) {
-            drop -= hitDamage;
-            hitVictim = null;
-            hitDamage = 0;
-        }
-        if (hasPrevious
-                && drop >= MIN_BULLET_POWER && drop <= MAX_BULLET_POWER
-                && enemy.lastSeen - previousTime <= 2) {
-            waves.add(new EnemyWave(enemy.name, previousX, previousY,
-                    previousAbsBearing, previousLateralDirection,
-                    20 - 3 * drop, enemy.lastSeen - 1, previousSegment));
-            // Inverte a cada tiro detectado. Só vale quando o perigo dos dois lados
-            // empata (ainda sem dados); com dados, a simulação decide a direção.
+        Double damage = ownDamage.remove(enemy.name);
+        if (damage != null) drop -= damage;
+        // Scans consecutivos permitem posicionar a origem do tiro com precisao.
+        if (previous != null && enemy.lastSeen - previous.time == 1
+                && drop >= MIN_BULLET_POWER - 0.000001
+                && drop <= MAX_BULLET_POWER + 0.000001) {
+            double power = limit(MIN_BULLET_POWER, drop, MAX_BULLET_POWER);
+            waves.add(new EnemyWave(enemy.name, previous.x, previous.y,
+                    previous.bearing, previous.direction,
+                    20 - 3 * power, previous.time, previous.segment));
             direction = -direction;
         }
-
-        hasPrevious = true;
-        previousTime = enemy.lastSeen;
-        previousX = enemy.x;
-        previousY = enemy.y;
-        previousAbsBearing = absBearing;
-        previousLateralDirection = lateralDirection;
-        previousSegment = segment(Point2D.distance(myX, myY, enemy.x, enemy.y), Math.abs(lateral));
+        ScanState current = new ScanState();
+        current.time = enemy.lastSeen;
+        current.x = enemy.x;
+        current.y = enemy.y;
+        current.bearing = absBearing;
+        current.direction = lateralDirection;
+        current.segment = segment(Point2D.distance(myX, myY, enemy.x, enemy.y),
+                Math.abs(lateral));
+        scans.put(enemy.name, current);
     }
 
     public void onBulletHit(BulletHitEvent e) {
         double power = e.getBullet().getPower();
-        hitVictim = e.getName();
-        hitDamage = 4 * power + (power > 1 ? 2 * (power - 1) : 0);
+        double damage = 4 * power + (power > 1 ? 2 * (power - 1) : 0);
+        Double pending = ownDamage.get(e.getName());
+        ownDamage.put(e.getName(), damage + (pending == null ? 0 : pending));
     }
 
     /** Descobre de qual onda veio a bala e registra onde fomos acertados. */

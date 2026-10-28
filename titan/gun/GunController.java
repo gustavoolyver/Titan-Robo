@@ -30,7 +30,7 @@ public class GunController {
     }
 
     public void execute(Enemy target) {
-        if (target == null) {
+        if (target == null || robot.getTime() - target.lastSeen > 1) {
             return;
         }
         double myX = robot.getX();
@@ -40,15 +40,20 @@ public class GunController {
         double power = selectPower(distance);
         double bulletSpeed = 20 - 3 * power;
 
+        long time = robot.getTime();
+        targeting.onTick(target, time);
+        // Pontua as ondas antigas antes de criar a onda deste turno.
+        targeting.onAim(target, myX, myY, bulletSpeed, time);
         double aimAngle = targeting.aimAngle(target, myX, myY, bulletSpeed, field);
         double gunTurn = Utils.normalRelativeAngle(aimAngle - robot.getGunHeadingRadians());
         robot.setTurnGunRightRadians(gunTurn);
 
         if (robot.getGunHeat() == 0
-                && Math.abs(robot.getGunTurnRemainingRadians()) < FIRE_TOLERANCE
+                && Math.abs(gunTurn) < FIRE_TOLERANCE
                 && robot.getEnergy() > power
                 && robot.setFireBullet(power) != null) {
             stats.shotFired();
+            targeting.onFire(target, myX, myY, bulletSpeed, time);
         }
     }
 
