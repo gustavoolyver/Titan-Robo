@@ -3,7 +3,7 @@ package titan.move;
 import titan.move.formulas.FlattenerFormula;
 import titan.move.formulas.NormalFormula;
 
-public class DiamondWhoosh {
+public class TitanWhoosh {
     public double evaluateMovementRisk(double distance, double wallDist, double gf) {
         double normalRisk = NormalFormula.calculateStandardRisk(distance, gf);
         double flatRisk = FlattenerFormula.flattenRisk(gf, 0.1);
