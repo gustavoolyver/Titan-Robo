@@ -12,7 +12,7 @@ import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
 /**
- * TitanVingation: Robocode CLASSICO, Java 8+, um unico fonte.
+ * TitanV2: Robocode CLASSICO, Java 8+, um unico fonte.
  * Projetado para melee (voce + 5 inimigos), com transicao automatica para duelo.
  * Instale em robots/titan/TitanVingation.java. Nao serve para Tank Royale.
  *
@@ -39,7 +39,7 @@ import java.util.zip.GZIPOutputStream;
  * Aprendizado estatistico, nao rede neural; nao garante vencer qualquer robo.
  * O arquivo de aprendizado fica no diretorio de dados do robo, fora do JAR.
  */
-public class TitanVingation extends AdvancedRobot {
+public class TitanV2 extends AdvancedRobot {
     private static final double PI = Math.PI, TWO_PI = 2 * PI;
     private static final int BINS = 31, MID = BINS / 2, SEGMENTS = 18;
     private static final int MAX_MODELS = 12, MAX_WAVES = 100;
